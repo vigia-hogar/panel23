@@ -1,0 +1,205 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#0f172a">
+<meta name="robots" content="noindex,nofollow">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon-192.png">
+<title>Vigía DNS</title>
+<style>
+:root{--bg:#0f172a;--card:#1e293b;--line:#334155;--tx:#e2e8f0;--mut:#94a3b8;--ok:#22c55e;--bad:#ef4444;--warn:#f59e0b;--acc:#38bdf8}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--tx);font:15px/1.4 system-ui,sans-serif;padding:env(safe-area-inset-top) 12px 80px}
+h1{font-size:20px;margin:14px 0 4px}
+h2{font-size:14px;margin:0 0 8px;color:var(--mut);text-transform:uppercase;letter-spacing:.05em}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px;margin:10px 0}
+.row{display:flex;justify-content:space-between;gap:8px;align-items:center}
+.big{font-size:28px;font-weight:700}
+.pill{padding:2px 8px;border-radius:99px;font-size:12px;font-weight:600}
+.ok{background:#14532d;color:#86efac}.bad{background:#7f1d1d;color:#fca5a5}.warn{background:#78350f;color:#fcd34d}
+input,select,button{font:inherit;color:var(--tx);background:#0b1220;border:1px solid var(--line);border-radius:8px;padding:10px;width:100%;margin:4px 0}
+button{background:var(--acc);color:#04202e;font-weight:700;border:0;cursor:pointer}
+button.sec{background:#0b1220;color:var(--tx);border:1px solid var(--line)}
+label{font-size:12px;color:var(--mut)}
+.mut{color:var(--mut)}.small{font-size:12px}
+.item{padding:7px 0;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;gap:8px}
+.item:last-child{border:0}
+.dom{word-break:break-all}
+.bars{display:flex;align-items:flex-end;gap:2px;height:70px;margin-top:6px}
+.bars div{flex:1;background:var(--acc);border-radius:2px 2px 0 0;min-height:2px}
+.bars div.n{background:var(--warn)}
+.tabs{display:flex;gap:6px;margin:8px 0}
+.tabs button{margin:0;padding:8px}
+.hidden{display:none}
+#err{color:var(--bad);white-space:pre-wrap}
+</style>
+</head>
+<body>
+<h1>🛡️ Vigía DNS</h1>
+<div class="mut small" id="upd">—</div>
+<div id="err"></div>
+
+<div id="setup" class="card hidden">
+  <h2>Configuración</h2>
+  <label>API key de NextDNS (my.nextdns.io/account)</label>
+  <input id="key" type="password" autocomplete="off">
+  <label>ID del perfil (6 caracteres, el de la URL de NextDNS)</label>
+  <input id="prof" autocomplete="off">
+  <button onclick="loadDevices()">Cargar dispositivos</button>
+  <label>Dispositivo a vigilar</label>
+  <select id="dev"><option value="">Todos</option></select>
+  <label>Aviso si no hay actividad en (minutos)</label>
+  <input id="sil" type="number" value="180">
+  <label>Horas "de noche" (inicio – fin, formato 24h)</label>
+  <div class="row"><input id="n1" type="number" value="23"><input id="n2" type="number" value="7"></div>
+  <label>Refresco automático (segundos, con la app abierta)</label>
+  <input id="poll" type="number" value="60">
+  <button onclick="saveCfg()">Guardar y empezar</button>
+  <button class="sec" onclick="askNotif()">Activar notificaciones</button>
+</div>
+
+<div id="main" class="hidden">
+  <div class="card">
+    <div class="row"><h2>Estado</h2><span id="st" class="pill ok">—</span></div>
+    <div class="row"><div><div class="big" id="last">—</div><div class="mut small" id="lastd"></div></div>
+    <div style="text-align:right"><div class="big" id="cnt">—</div><div class="mut small">consultas 24 h · <span id="blk">0</span> bloqueadas</div></div></div>
+  </div>
+  <div class="card"><h2>Actividad por hora (24 h)</h2><div class="bars" id="bars"></div>
+    <div class="row mut small"><span>hace 24 h</span><span>ahora</span></div>
+    <div class="mut small">Naranja = franja nocturna</div></div>
+  <div class="tabs">
+    <button class="sec" onclick="tab('top')">Más visitados</button>
+    <button class="sec" onclick="tab('blocked')">Bloqueados</button>
+    <button class="sec" onclick="tab('recent')">Reciente</button>
+  </div>
+  <div class="card" id="t-top"></div>
+  <div class="card hidden" id="t-blocked"></div>
+  <div class="card hidden" id="t-recent">
+    <input id="q" placeholder="Buscar dominio…" oninput="renderRecent()">
+    <div id="rec"></div>
+  </div>
+  <div class="row"><button onclick="refresh(true)">Actualizar</button><button class="sec" onclick="showSetup()">Ajustes</button></div>
+  <p class="mut small">Solo se ven dominios consultados, no contenido ni mensajes. El niño debe saber que existe esta supervisión.</p>
+</div>
+
+<script>
+const API='https://api.nextdns.io';
+const $=id=>document.getElementById(id);
+let cfg=JSON.parse(localStorage.getItem('vigia')||'null');
+let logs=[],timer=null,seen=new Set(JSON.parse(localStorage.getItem('vigia_seen')||'[]')),lastSilentAlert=0;
+
+async function api(path){
+  const r=await fetch(API+path,{headers:{'X-Api-Key':(cfg&&cfg.key)||$('key').value.trim()}});
+  const j=await r.json().catch(()=>({}));
+  if(j.errors) throw new Error(JSON.stringify(j.errors));
+  if(!r.ok) throw new Error('HTTP '+r.status);
+  return j;
+}
+function showSetup(){
+  $('setup').classList.remove('hidden');$('main').classList.add('hidden');
+  if(cfg){$('key').value=cfg.key;$('prof').value=cfg.prof;$('sil').value=cfg.sil;$('n1').value=cfg.n1;$('n2').value=cfg.n2;$('poll').value=cfg.poll;
+    if(cfg.dev){$('dev').innerHTML=`<option value="">Todos</option><option value="${cfg.dev}" selected>${cfg.devName||cfg.dev}</option>`}}
+}
+async function loadDevices(){
+  try{
+    $('err').textContent='';
+    const p=$('prof').value.trim();
+    const j=await api(`/profiles/${p}/analytics/devices?from=-30d&limit=50`);
+    $('dev').innerHTML='<option value="">Todos</option>'+j.data.map(d=>`<option value="${d.id}" data-n="${d.name||'Sin identificar'}">${d.name||'Sin identificar'}${d.model?' ('+d.model+')':''}</option>`).join('');
+  }catch(e){$('err').textContent='No se pudo conectar: '+e.message+'\nSi dice "Failed to fetch", es CORS o la clave es incorrecta.'}
+}
+function saveCfg(){
+  const o=$('dev').selectedOptions[0];
+  cfg={key:$('key').value.trim(),prof:$('prof').value.trim(),dev:$('dev').value,devName:o?o.dataset.n||o.textContent:'',
+    sil:+$('sil').value||180,n1:+$('n1').value,n2:+$('n2').value,poll:Math.max(15,+$('poll').value||60)};
+  localStorage.setItem('vigia',JSON.stringify(cfg));
+  $('setup').classList.add('hidden');$('main').classList.remove('hidden');
+  start();
+}
+function askNotif(){
+  if(!('Notification' in window)){alert('Este navegador no soporta notificaciones');return}
+  Notification.requestPermission().then(p=>alert('Notificaciones: '+p));
+}
+function notify(title,body,tag){
+  if(!('Notification' in window)||Notification.permission!=='granted')return;
+  navigator.serviceWorker.ready.then(r=>r.showNotification(title,{body,tag,icon:'icon-192.png',badge:'icon-192.png',vibrate:[200,100,200]}));
+}
+const isNight=d=>{const h=d.getHours();return cfg.n1>cfg.n2?(h>=cfg.n1||h<cfg.n2):(h>=cfg.n1&&h<cfg.n2)};
+const ago=ms=>{const m=Math.round(ms/60000);if(m<1)return'ahora';if(m<60)return m+' min';const h=Math.floor(m/60);return h<24?h+' h '+(m%60)+' min':Math.floor(h/24)+' d'};
+const ft=d=>d.toLocaleString('es-ES',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'});
+
+async function fetchLogs(){
+  const dv=cfg.dev?'&device='+encodeURIComponent(cfg.dev):'';
+  let out=[],cursor=null;
+  for(let i=0;i<4;i++){
+    const j=await api(`/profiles/${cfg.prof}/logs?from=-24h&limit=1000${dv}${cursor?'&cursor='+cursor:''}`);
+    out=out.concat(j.data);cursor=j.meta&&j.meta.pagination&&j.meta.pagination.cursor;
+    if(!cursor)break;
+  }
+  return out;
+}
+async function refresh(manual){
+  try{
+    $('err').textContent='';
+    logs=await fetchLogs();
+    render();alerts(manual);
+    $('upd').textContent='Actualizado '+new Date().toLocaleTimeString('es-ES')+' · '+(cfg.devName||'todos los dispositivos');
+  }catch(e){$('err').textContent='Error: '+e.message}
+}
+function render(){
+  const now=Date.now();
+  const last=logs.length?new Date(logs[0].timestamp):null;
+  const idle=last?now-last:Infinity;
+  $('last').textContent=last?ago(idle):'sin datos';
+  $('lastd').textContent=last?'última actividad: '+ft(last):'sin registros en 24 h';
+  const st=$('st');
+  const silent=idle>cfg.sil*60000&&!isNight(new Date());
+  st.textContent=silent?'SILENCIO':'activo';st.className='pill '+(silent?'bad':'ok');
+  const blocked=logs.filter(l=>l.status==='blocked');
+  $('cnt').textContent=logs.length;$('blk').textContent=blocked.length;
+  // barras por hora
+  const b=Array(24).fill(0),nt=Array(24).fill(false);
+  logs.forEach(l=>{const a=Math.floor((now-new Date(l.timestamp))/3600000);if(a>=0&&a<24)b[23-a]++});
+  for(let i=0;i<24;i++){nt[i]=isNight(new Date(now-(23-i)*3600000))}
+  const mx=Math.max(...b,1);
+  $('bars').innerHTML=b.map((v,i)=>`<div class="${nt[i]?'n':''}" style="height:${v/mx*100}%" title="${v}"></div>`).join('');
+  // top
+  const c={};logs.forEach(l=>{const k=l.root||l.domain;c[k]=(c[k]||0)+1});
+  $('t-top').innerHTML='<h2>Más consultados (24 h)</h2>'+Object.entries(c).sort((x,y)=>y[1]-x[1]).slice(0,25).map(([k,v])=>`<div class="item"><span class="dom">${k}</span><span class="mut">${v}</span></div>`).join('');
+  $('t-blocked').innerHTML='<h2>Bloqueados (24 h)</h2>'+(blocked.length?blocked.slice(0,100).map(l=>`<div class="item"><span class="dom">${l.domain}<div class="mut small">${(l.reasons||[]).map(r=>r.name).join(', ')}</div></span><span class="mut small">${ft(new Date(l.timestamp))}</span></div>`).join(''):'<div class="mut">Nada bloqueado.</div>');
+  renderRecent();
+}
+function renderRecent(){
+  const q=$('q').value.toLowerCase();
+  $('rec').innerHTML=logs.filter(l=>!q||l.domain.includes(q)).slice(0,150).map(l=>`<div class="item"><span class="dom">${l.status==='blocked'?'⛔ ':''}${l.domain}</span><span class="mut small">${ft(new Date(l.timestamp))}</span></div>`).join('');
+}
+function tab(t){['top','blocked','recent'].forEach(x=>$('t-'+x).classList.toggle('hidden',x!==t))}
+function alerts(manual){
+  const now=Date.now();
+  // bloqueos nuevos
+  logs.filter(l=>l.status==='blocked').forEach(l=>{
+    const id=l.timestamp+l.domain;
+    if(!seen.has(id)){seen.add(id);if(!manual||true){if(now-new Date(l.timestamp)<10*60000)notify('Intento bloqueado',l.domain,'blk-'+l.domain)}}
+  });
+  localStorage.setItem('vigia_seen',JSON.stringify([...seen].slice(-300)));
+  // silencio
+  const last=logs.length?new Date(logs[0].timestamp):null;
+  if(!isNight(new Date())&&(!last||now-last>cfg.sil*60000)&&now-lastSilentAlert>3600000){
+    lastSilentAlert=now;notify('Dispositivo en silencio','Sin actividad DNS desde hace '+(last?ago(now-last):'más de 24 h')+'. ¿Perfil borrado o datos apagados?','silent');
+  }
+  // actividad nocturna
+  const nl=logs.filter(l=>isNight(new Date(l.timestamp))&&now-new Date(l.timestamp)<+cfg.poll*1000*2&&l.status!=='blocked');
+  if(nl.length>5)notify('Actividad nocturna',nl.length+' consultas recientes en horario nocturno','night');
+}
+function start(){
+  if(timer)clearInterval(timer);
+  refresh();timer=setInterval(()=>{if(!document.hidden)refresh()},cfg.poll*1000);
+}
+document.addEventListener('visibilitychange',()=>{if(!document.hidden&&cfg)refresh()});
+if('serviceWorker' in navigator)navigator.serviceWorker.register('sw.js');
+if(cfg&&cfg.key){$('main').classList.remove('hidden');start()}else showSetup();
+</script>
+</body>
+</html>
