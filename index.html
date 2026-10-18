@@ -47,6 +47,8 @@ label{font-size:12px;color:var(--mut)}
   <input id="key" type="password" autocomplete="off">
   <label>ID del perfil (6 caracteres, el de la URL de NextDNS)</label>
   <input id="prof" autocomplete="off">
+  <label>URL del proxy (solo si sale "Failed to fetch"; vacío = directo)</label>
+  <input id="base" placeholder="https://xxxx.workers.dev" autocomplete="off">
   <button onclick="loadDevices()">Cargar dispositivos</button>
   <label>Dispositivo a vigilar</label>
   <select id="dev"><option value="">Todos</option></select>
@@ -85,13 +87,14 @@ label{font-size:12px;color:var(--mut)}
 </div>
 
 <script>
-const API='https://api.nextdns.io';
 const $=id=>document.getElementById(id);
+const DEF_API='https://api.nextdns.io';
+const base=()=>(($('base')&&$('base').value.trim())||(cfg&&cfg.base)||DEF_API).replace(/\/$/,'');
 let cfg=JSON.parse(localStorage.getItem('vigia')||'null');
 let logs=[],timer=null,seen=new Set(JSON.parse(localStorage.getItem('vigia_seen')||'[]')),lastSilentAlert=0;
 
 async function api(path){
-  const r=await fetch(API+path,{headers:{'X-Api-Key':(cfg&&cfg.key)||$('key').value.trim()}});
+  const r=await fetch(base()+path,{headers:{'X-Api-Key':$('key').value.trim()||(cfg&&cfg.key)||''}});
   const j=await r.json().catch(()=>({}));
   if(j.errors) throw new Error(JSON.stringify(j.errors));
   if(!r.ok) throw new Error('HTTP '+r.status);
@@ -99,7 +102,7 @@ async function api(path){
 }
 function showSetup(){
   $('setup').classList.remove('hidden');$('main').classList.add('hidden');
-  if(cfg){$('key').value=cfg.key;$('prof').value=cfg.prof;$('sil').value=cfg.sil;$('n1').value=cfg.n1;$('n2').value=cfg.n2;$('poll').value=cfg.poll;
+  if(cfg){$('key').value=cfg.key;$('prof').value=cfg.prof;$('base').value=cfg.base||'';$('sil').value=cfg.sil;$('n1').value=cfg.n1;$('n2').value=cfg.n2;$('poll').value=cfg.poll;
     if(cfg.dev){$('dev').innerHTML=`<option value="">Todos</option><option value="${cfg.dev}" selected>${cfg.devName||cfg.dev}</option>`}}
 }
 async function loadDevices(){
@@ -108,11 +111,11 @@ async function loadDevices(){
     const p=$('prof').value.trim();
     const j=await api(`/profiles/${p}/analytics/devices?from=-30d&limit=50`);
     $('dev').innerHTML='<option value="">Todos</option>'+j.data.map(d=>`<option value="${d.id}" data-n="${d.name||'Sin identificar'}">${d.name||'Sin identificar'}${d.model?' ('+d.model+')':''}</option>`).join('');
-  }catch(e){$('err').textContent='No se pudo conectar: '+e.message+'\nSi dice "Failed to fetch", es CORS o la clave es incorrecta.'}
+  }catch(e){$('err').textContent='No se pudo conectar: '+e.message+'\nSi dice "Failed to fetch": bloqueo CORS de la API. Usa el proxy.'}
 }
 function saveCfg(){
   const o=$('dev').selectedOptions[0];
-  cfg={key:$('key').value.trim(),prof:$('prof').value.trim(),dev:$('dev').value,devName:o?o.dataset.n||o.textContent:'',
+  cfg={key:$('key').value.trim(),prof:$('prof').value.trim(),base:$('base').value.trim().replace(/\/$/,''),dev:$('dev').value,devName:o?o.dataset.n||o.textContent:'',
     sil:+$('sil').value||180,n1:+$('n1').value,n2:+$('n2').value,poll:Math.max(15,+$('poll').value||60)};
   localStorage.setItem('vigia',JSON.stringify(cfg));
   $('setup').classList.add('hidden');$('main').classList.remove('hidden');
