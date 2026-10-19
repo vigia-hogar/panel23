@@ -82,6 +82,12 @@ summary::-webkit-details-marker{display:none}
     <div class="row"><div><div class="big" id="last">—</div><div class="mut small" id="lastd"></div><div class="mut small" id="lastapp"></div></div>
     <div style="text-align:right"><div class="big" id="cnt">—</div><div class="mut small"><span id="cntl">consultas 24 h</span> · <span id="blk">0</span> bloqueadas</div></div></div>
   </div>
+  <div class="card hidden" id="avisos">
+    <div class="row"><h2>Avisos</h2><span id="avn"></span></div>
+    <div id="avl"></div>
+    <div class="row"><button class="sec" onclick="avSeen()">Marcar vistos</button><button class="sec" onclick="enablePush()">Activar avisos en este móvil</button></div>
+    <div class="mut small" id="avmsg"></div>
+  </div>
   <div class="card"><h2>Actividad por hora (24 h)</h2><div class="bars" id="bars"></div>
     <div class="row mut small"><span>hace 24 h</span><span>ahora</span></div>
     <div class="mut small">Naranja = franja nocturna</div></div>
@@ -324,8 +330,46 @@ function merged(days){
   for(const s of all){const l=out[out.length-1];if(l&&l.p===s.p&&s.s-l.e<60000){l.e=Math.max(l.e,s.e)}else out.push({...s})}
   return out;
 }
+// ---------- Avisos del Worker (historial + notificaciones push propias) ----------
+const seenTs=()=>{try{return +localStorage.getItem('vigia_av_seen')||0}catch(e){return 0}};
+function avSeen(){try{localStorage.setItem('vigia_av_seen',String(Date.now()))}catch(e){}renderAvisos()}
+function renderAvisos(){
+  if(!dev)return;
+  const list=(dev.alerts||[]).filter(a=>a.t>Date.now()-7*86400000),s=seenTs(),nw=list.filter(a=>a.t>s).length;
+  $('avisos').classList.remove('hidden');
+  $('avn').innerHTML=nw?`<span class="pill bad">${nw} nuevo${nw>1?'s':''}</span>`:'<span class="pill ok">al día</span>';
+  $('avl').innerHTML=list.slice(0,8).map(a=>`<div class="item small${a.t>s?'':' dim'}"><span><b style="color:${a.p>=5?'var(--bad)':a.p>=4?'var(--warn)':'var(--tx)'}">${esc(a.title)}</b><div class="mut">${esc(a.msg)}</div></span><span class="mut">${new Date(a.t).toLocaleString('es-ES',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})}</span></div>`).join('')||'<div class="mut small">Sin avisos en los últimos 7 días.</div>';
+  pushState();
+}
+async function pushState(){
+  try{
+    if(!('PushManager' in window)||!('serviceWorker' in navigator)){$('avmsg').textContent='Este navegador no admite notificaciones push.';return}
+    const reg=await navigator.serviceWorker.ready,sub=await reg.pushManager.getSubscription();
+    $('avmsg').textContent=sub?'Avisos al móvil: activados en este dispositivo.':'Avisos al móvil: aún no activados (pulsa el botón).';
+  }catch(e){}
+}
+const u8=b=>{b=b.replace(/-/g,'+').replace(/_/g,'/');b+='='.repeat((4-b.length%4)%4);return Uint8Array.from(atob(b),c=>c.charCodeAt(0))};
+async function enablePush(){
+  try{
+    $('err').textContent='';
+    if(!cfg||!cfg.wurl||!cfg.rtok)throw new Error('Falta la URL del Worker y el token de lectura en Ajustes.');
+    if(!('PushManager' in window))throw new Error('Este navegador no admite notificaciones push.');
+    const p=await Notification.requestPermission();
+    if(p!=='granted')throw new Error('Permiso de notificaciones: '+p+'. Actívalo en los ajustes del navegador para esta web.');
+    const h={'X-Read-Token':cfg.rtok},reg=await navigator.serviceWorker.ready;
+    const k=await (await fetch(cfg.wurl+'/vapid',{headers:h})).json();
+    if(!k.key)throw new Error('El Worker no devolvió la clave de avisos.');
+    let sub=await reg.pushManager.getSubscription();
+    if(!sub)sub=await reg.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:u8(k.key)});
+    const r=await fetch(cfg.wurl+'/subscribe',{method:'POST',headers:{...h,'Content-Type':'application/json'},body:JSON.stringify(sub)});
+    if(!r.ok)throw new Error('El Worker rechazó la suscripción (HTTP '+r.status+').');
+    await fetch(cfg.wurl+'/testpush',{method:'POST',headers:h});
+    devAt=0;await loadDev(true);
+  }catch(e){$('err').textContent='Avisos: '+e.message}
+}
 function renderDev(){
   if(!dev)return;
+  renderAvisos();
   const now=Date.now(),st=dev.state||{},hb=st.hb;
   if(!hb){$('dstate').innerHTML='<div class="mut">Aún no ha llegado nada de la app del móvil.</div>';return}
   const age=now-hb.rx,cls=age<25*60000?'ok':age<45*60000?'warn':'bad';
