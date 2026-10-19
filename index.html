@@ -42,6 +42,8 @@ summary::-webkit-details-marker{display:none}
 .mini{width:auto;padding:2px 8px;margin:0 0 0 6px;font-size:12px;background:#0b1220;color:var(--acc);border:1px solid var(--line)}
 .chk{display:flex;align-items:center;gap:6px;font-size:13px;color:var(--tx);margin:6px 0}
 .chk input{width:auto;margin:0}
+.tb{height:5px;background:var(--acc);border-radius:3px;margin-top:3px}
+.dim{opacity:.55}
 </style>
 </head>
 <body>
@@ -66,6 +68,10 @@ summary::-webkit-details-marker{display:none}
   <div class="row"><input id="n1" type="number" value="23"><input id="n2" type="number" value="7"></div>
   <label>Refresco automático (segundos, con la app abierta)</label>
   <input id="poll" type="number" value="60">
+  <label>App del móvil del niño: URL del Worker de alertas (opcional)</label>
+  <input id="wurl" value="https://dns-alertas.maxthon23176.workers.dev" autocomplete="off">
+  <label>Token de lectura (READ_TOKEN, opcional)</label>
+  <input id="rtok" type="password" autocomplete="off">
   <button onclick="saveCfg()">Guardar y empezar</button>
   <button class="sec" onclick="askNotif()">Activar notificaciones</button>
 </div>
@@ -83,6 +89,7 @@ summary::-webkit-details-marker{display:none}
     <button class="sec" onclick="tab('top')">Por app</button>
     <button class="sec" onclick="tab('blocked')">Bloqueados</button>
     <button class="sec" onclick="tab('recent')">Reciente</button>
+    <button class="sec" onclick="tab('dev');loadDev(true)">Móvil</button>
   </div>
   <div class="card" id="t-top">
     <div class="row"><h2>Por app</h2>
@@ -96,6 +103,16 @@ summary::-webkit-details-marker{display:none}
   <div class="card hidden" id="t-recent">
     <input id="q" placeholder="Buscar dominio…" oninput="renderRecent()">
     <div id="rec"></div>
+  </div>
+  <div class="card hidden" id="t-dev">
+    <div id="dstate"></div>
+    <h2 style="margin-top:12px">Ahora</h2><div id="dnow"></div>
+    <h2 style="margin-top:12px">Hoy, por orden</h2><div id="dtl"></div>
+    <div class="row" style="margin-top:12px"><h2>Tiempo por app</h2>
+      <select id="dper" onchange="renderDev()" style="width:auto;margin:0"><option value="1">Hoy</option><option value="7">7 días</option></select></div>
+    <div id="dtot"></div>
+    <h2 style="margin-top:12px">Apps instaladas</h2><div id="dapps"></div>
+    <div class="mut small" style="margin-top:8px">Datos de la app instalada en el móvil (apps en primer plano y apps instaladas). Se envían cada ~10 min.</div>
   </div>
   <div class="row"><button onclick="refresh(true)">Actualizar</button><button class="sec" onclick="showSetup()">Ajustes</button></div>
   <p class="mut small">Solo se ven dominios consultados, no contenido ni mensajes. El niño debe saber que existe esta supervisión.</p>
@@ -206,7 +223,7 @@ async function api(path){
 }
 function showSetup(){
   $('setup').classList.remove('hidden');$('main').classList.add('hidden');
-  if(cfg){$('key').value=cfg.key;$('prof').value=cfg.prof;$('base').value=cfg.base||'';$('sil').value=cfg.sil;$('n1').value=cfg.n1;$('n2').value=cfg.n2;$('poll').value=cfg.poll;
+  if(cfg){$('key').value=cfg.key;$('prof').value=cfg.prof;$('base').value=cfg.base||'';$('sil').value=cfg.sil;$('n1').value=cfg.n1;$('n2').value=cfg.n2;$('poll').value=cfg.poll;$('wurl').value=cfg.wurl||$('wurl').value;$('rtok').value=cfg.rtok||'';
     if(cfg.dev){$('dev').innerHTML=`<option value="">Todos</option><option value="${cfg.dev}" selected>${cfg.devName||cfg.dev}</option>`}}
 }
 async function loadDevices(){
@@ -220,7 +237,8 @@ async function loadDevices(){
 function saveCfg(){
   const o=$('dev').selectedOptions[0];
   cfg={key:$('key').value.trim(),prof:$('prof').value.trim(),base:$('base').value.trim().replace(/\/$/,''),dev:$('dev').value,devName:o?o.dataset.n||o.textContent:'',
-    sil:+$('sil').value||180,n1:+$('n1').value,n2:+$('n2').value,poll:Math.max(15,+$('poll').value||60)};
+    sil:+$('sil').value||180,n1:+$('n1').value,n2:+$('n2').value,poll:Math.max(15,+$('poll').value||60),
+    wurl:$('wurl').value.trim().replace(/\/$/,''),rtok:$('rtok').value.trim()};
   localStorage.setItem('vigia',JSON.stringify(cfg));
   $('setup').classList.add('hidden');$('main').classList.remove('hidden');
   start();
@@ -253,6 +271,7 @@ async function refresh(manual){
     logs=await fetchLogs();
     if(per!=='24h'&&(manual||!ana.length))await loadAna();
     render();alerts(manual);
+    if(cfg.wurl&&cfg.rtok)loadDev(manual);
     $('upd').textContent='Actualizado '+new Date().toLocaleTimeString('es-ES')+' · '+(cfg.devName||'todos los dispositivos');
   }catch(e){$('err').textContent='Error: '+e.message}
 }
@@ -284,7 +303,49 @@ function renderRecent(){
   const q=$('q').value.toLowerCase();
   $('rec').innerHTML=logs.filter(l=>!q||l.domain.includes(q)).slice(0,150).map(l=>`<div class="item"><span class="dom">${l.status==='blocked'?'⛔ ':''}${esc(l.domain)}</span><span class="mut small">${ft(new Date(l.timestamp))}</span></div>`).join('');
 }
-function tab(t){['top','blocked','recent'].forEach(x=>$('t-'+x).classList.toggle('hidden',x!==t))}
+// ---------- Móvil del niño (datos de la app Android) ----------
+let dev=null,devAt=0;
+const hm=ms=>new Date(ms).toLocaleTimeString('es-ES',{hour:'2-digit',minute:'2-digit'});
+const dur=ms=>{const s=Math.round(ms/1000);if(s<60)return s+' s';const m=Math.round(s/60);return m<60?m+' min':Math.floor(m/60)+' h '+String(m%60).padStart(2,'0')+' min'};
+const todayKey=()=>new Intl.DateTimeFormat('en-CA',{timeZone:'Europe/Madrid'}).format(new Date());
+const HOME='Pantalla de inicio';
+async function loadDev(force){
+  if(!cfg||!cfg.wurl||!cfg.rtok){$('dstate').innerHTML='<div class="mut">Falta la URL del Worker y el token de lectura en Ajustes.</div>';return}
+  if(!force&&Date.now()-devAt<120000)return;
+  try{
+    const r=await fetch(cfg.wurl+'/data?days=7',{headers:{'X-Read-Token':cfg.rtok}});
+    if(!r.ok)throw new Error('HTTP '+r.status+(r.status===403?' (token o origen no válidos)':''));
+    dev=await r.json();devAt=Date.now();
+  }catch(e){$('dstate').innerHTML='<div style="color:var(--bad)">Error: '+esc(e.message)+'</div>';return}
+  renderDev();
+}
+function merged(days){
+  const all=[].concat(...days.map(d=>dev.days[d]||[])).sort((a,b)=>a.s-b.s),out=[];
+  for(const s of all){const l=out[out.length-1];if(l&&l.p===s.p&&s.s-l.e<60000){l.e=Math.max(l.e,s.e)}else out.push({...s})}
+  return out;
+}
+function renderDev(){
+  if(!dev)return;
+  const now=Date.now(),st=dev.state||{},hb=st.hb;
+  if(!hb){$('dstate').innerHTML='<div class="mut">Aún no ha llegado nada de la app del móvil.</div>';return}
+  const age=now-hb.rx,cls=age<25*60000?'ok':age<45*60000?'warn':'bad';
+  $('dstate').innerHTML=`<div class="row"><h2>Estado de la app</h2><span class="pill ${cls}">${cls==='ok'?'con señal':cls==='warn'?'retraso':'SIN SEÑAL'}</span></div>
+    <div class="small">Última señal: hace ${ago(age)} · batería ${hb.bat??'?'}% · pantalla ${hb.screen?'encendida':'apagada'}<br>
+    Permiso de uso: <b style="color:${hb.usageOk?'var(--ok)':'var(--bad)'}">${hb.usageOk?'OK':'RETIRADO'}</b> · Protección anti-desinstalación: <b style="color:${hb.admin?'var(--ok)':'var(--warn)'}">${hb.admin?'activa':'no'}</b></div>`;
+  const key=todayKey(),today=merged([key]);
+  const last=today[today.length-1];
+  $('dnow').innerHTML=!last?'<div class="mut">Sin actividad hoy.</div>':
+    (hb.screen&&now-last.e<12*60000&&last.l!==HOME)?`<div><b>${esc(last.l)}</b> <span class="mut small">desde ${hm(last.s)} (datos hasta hace ${ago(age)})</span></div>`:
+    `<div class="mut">${hb.screen?'Sin app en primer plano':'Pantalla apagada'} · última: <b>${esc(last.l)}</b> hasta las ${hm(last.e)}</div>`;
+  $('dtl').innerHTML=today.slice().reverse().map(s=>`<div class="item small ${s.l===HOME?'dim':''}"><span>${hm(s.s)}–${hm(s.e)} · <b>${esc(s.l)}</b></span><span class="mut">${dur(s.e-s.s)}</span></div>`).join('')||'<div class="mut">—</div>';
+  const n=+$('dper').value,keys=Object.keys(dev.days).sort().slice(-n),tot={};
+  keys.forEach(k=>(dev.days[k]||[]).forEach(s=>{if(s.l!==HOME)tot[s.l]=(tot[s.l]||0)+(s.e-s.s)}));
+  const ent=Object.entries(tot).sort((a,b)=>b[1]-a[1]).slice(0,20),mx=ent.length?ent[0][1]:1;
+  $('dtot').innerHTML=ent.map(([l,v])=>`<div class="small"><div class="row"><span>${esc(l)}</span><span class="mut">${dur(v)}</span></div><div class="tb" style="width:${Math.max(3,v/mx*100)}%"></div></div>`).join('')||'<div class="mut">—</div>';
+  const apps=(st.apps||[]).slice().sort((a,b)=>b.i-a.i);
+  $('dapps').innerHTML=apps.map(a=>{const nw=a.i>now-7*86400000;return`<div class="item small"><span>${esc(a.l)}${nw?' <span class="pill warn">nueva</span>':''}</span><span class="mut">${new Date(a.i).toLocaleDateString('es-ES')}</span></div>`}).join('')||'<div class="mut">Aún sin lista de apps.</div>';
+}
+function tab(t){['top','blocked','recent','dev'].forEach(x=>$('t-'+x).classList.toggle('hidden',x!==t))}
 function alerts(manual){
   const now=Date.now();
   // bloqueos nuevos
