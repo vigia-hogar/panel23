@@ -34,6 +34,14 @@ label{font-size:12px;color:var(--mut)}
 .tabs button{margin:0;padding:8px}
 .hidden{display:none}
 #err{color:var(--bad);white-space:pre-wrap}
+details{border-bottom:1px solid var(--line);padding:7px 0}
+details:last-child{border:0}
+summary{cursor:pointer;display:flex;justify-content:space-between;gap:8px;list-style:none}
+summary::-webkit-details-marker{display:none}
+.tag{font-size:11px;color:var(--mut);border:1px solid var(--line);border-radius:99px;padding:0 6px;margin-left:4px}
+.mini{width:auto;padding:2px 8px;margin:0 0 0 6px;font-size:12px;background:#0b1220;color:var(--acc);border:1px solid var(--line)}
+.chk{display:flex;align-items:center;gap:6px;font-size:13px;color:var(--tx);margin:6px 0}
+.chk input{width:auto;margin:0}
 </style>
 </head>
 <body>
@@ -65,18 +73,25 @@ label{font-size:12px;color:var(--mut)}
 <div id="main" class="hidden">
   <div class="card">
     <div class="row"><h2>Estado</h2><span id="st" class="pill ok">—</span></div>
-    <div class="row"><div><div class="big" id="last">—</div><div class="mut small" id="lastd"></div></div>
-    <div style="text-align:right"><div class="big" id="cnt">—</div><div class="mut small">consultas 24 h · <span id="blk">0</span> bloqueadas</div></div></div>
+    <div class="row"><div><div class="big" id="last">—</div><div class="mut small" id="lastd"></div><div class="mut small" id="lastapp"></div></div>
+    <div style="text-align:right"><div class="big" id="cnt">—</div><div class="mut small"><span id="cntl">consultas 24 h</span> · <span id="blk">0</span> bloqueadas</div></div></div>
   </div>
   <div class="card"><h2>Actividad por hora (24 h)</h2><div class="bars" id="bars"></div>
     <div class="row mut small"><span>hace 24 h</span><span>ahora</span></div>
     <div class="mut small">Naranja = franja nocturna</div></div>
   <div class="tabs">
-    <button class="sec" onclick="tab('top')">Más visitados</button>
+    <button class="sec" onclick="tab('top')">Por app</button>
     <button class="sec" onclick="tab('blocked')">Bloqueados</button>
     <button class="sec" onclick="tab('recent')">Reciente</button>
   </div>
-  <div class="card" id="t-top"></div>
+  <div class="card" id="t-top">
+    <div class="row"><h2>Por app</h2>
+      <select id="per" onchange="setPer()" style="width:auto;margin:0"><option value="24h">24 h</option><option value="7d">7 días</option><option value="30d">30 días</option></select></div>
+    <label class="chk"><input type="checkbox" id="hide" checked onchange="localStorage.setItem('vigia_hide',this.checked?1:0);render()"> Ocultar sistema y anuncios</label>
+    <div class="mut small" id="appsum"></div>
+    <div id="apps"></div>
+    <div class="mut small" style="margin-top:8px">Agrupado por dominios conocidos; el DNS no ve qué app pide qué. En "Sin identificar" pulsa "asignar" para enseñarle la app (o escribe "sistema" si es ruido).</div>
+  </div>
   <div class="card hidden" id="t-blocked"></div>
   <div class="card hidden" id="t-recent">
     <input id="q" placeholder="Buscar dominio…" oninput="renderRecent()">
@@ -92,6 +107,93 @@ const DEF_API='https://api.nextdns.io';
 const base=()=>(($('base')&&$('base').value.trim())||(cfg&&cfg.base)||DEF_API).replace(/\/$/,'');
 let cfg=JSON.parse(localStorage.getItem('vigia')||'null');
 let logs=[],timer=null,seen=new Set(JSON.parse(localStorage.getItem('vigia_seen')||'[]')),lastSilentAlert=0;
+let per='24h',ana=[],openApps=new Set(),userMap=JSON.parse(localStorage.getItem('vigia_map')||'{}');
+const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const rootOf=d=>{const p=d.split('.');if(p.length<=2)return d;const t=p[p.length-1],s=p[p.length-2];return p.slice(-(t.length===2&&s.length<=3?3:2)).join('.')};
+/*RULES*/
+// Clasificador dominio -> app. tipo: app (uso real) | sys (fondo del sistema) | ads (anuncios/analiticas) | unk (sin identificar)
+const R=(...d)=>new RegExp('(^|\\.)('+d.map(x=>x.replace(/\./g,'\\.')).join('|')+')$');
+const RULES=[
+['YouTube','app',R('youtube.com','youtu.be','ytimg.com','googlevideo.com','youtubei.googleapis.com','youtube-nocookie.com','yt3.ggpht.com')],
+['TikTok','app',R('tiktok.com','tiktokcdn.com','tiktokcdn-eu.com','tiktokv.com','tiktokv.eu','byteoversea.com','ibytedtos.com','musical.ly','muscdn.com','ttwstatic.com','bytedance.com','byteimg.com','ibyteimg.com')],
+['Instagram','app',R('instagram.com','cdninstagram.com','instagr.am')],
+['WhatsApp','app',R('whatsapp.net','whatsapp.com','wa.me')],
+['Facebook / Meta','app',R('facebook.com','fbcdn.net','facebook.net','fbsbx.com','messenger.com','fb.com','fb.me','threads.net','meta.com')],
+['Snapchat','app',R('snapchat.com','sc-cdn.net','snap-dev.net','snapkit.com','feelinsonice.com')],
+['Discord','app',R('discord.com','discordapp.com','discordapp.net','discord.gg','discord.media')],
+['Telegram','app',R('telegram.org','t.me','telegram.me','telesco.pe','cdn-telegram.org')],
+['X / Twitter','app',R('twitter.com','x.com','twimg.com','t.co')],
+['Reddit','app',R('reddit.com','redd.it','redditmedia.com','redditstatic.com')],
+['Twitch','app',R('twitch.tv','ttvnw.net','jtvnw.net','twitchcdn.net')],
+['Spotify','app',R('spotify.com','scdn.co','spotifycdn.com','spoti.fi')],
+['Netflix','app',R('netflix.com','nflxvideo.net','nflximg.net','nflxso.net','nflxext.com')],
+['Disney+','app',R('disneyplus.com','disney-plus.net','bamgrid.com','dssott.com')],
+['Amazon / Prime Video','app',R('amazon.com','amazon.es','media-amazon.com','ssl-images-amazon.com','primevideo.com','amazonvideo.com','pv-cdn.net')],
+['Pinterest','app',R('pinterest.com','pinimg.com')],
+['Roblox','app',R('roblox.com','rbxcdn.com','robloxlabs.com','rbx.com')],
+['Fortnite / Epic','app',R('epicgames.com','epicgames.dev','unrealengine.com','fortnite.com')],
+['Minecraft','app',R('minecraft.net','mojang.com','minecraftservices.com')],
+['Supercell (Brawl Stars, Clash)','app',R('supercell.com','supercell.net','brawlstars.com','clashroyale.com','clashofclans.com')],
+['Free Fire','app',R('garena.com','freefiremobile.com','garenanow.com')],
+['PUBG / Krafton','app',R('pubgmobile.com','krafton.com','proximabeta.com','igamecj.com')],
+['Steam','app',R('steampowered.com','steamcommunity.com','steamstatic.com')],
+['Call of Duty','app',R('activision.com','callofduty.com')],
+['Among Us','app',R('innersloth.com','amongus.com')],
+['Duolingo','app',R('duolingo.com')],
+['IA (ChatGPT, Claude, Gemini...)','app',R('openai.com','chatgpt.com','oaistatic.com','oaiusercontent.com','anthropic.com','claude.ai','gemini.google.com','character.ai','perplexity.ai')],
+['Wikipedia','app',R('wikipedia.org','wikimedia.org')],
+['Google Classroom','app',R('classroom.google.com')],
+['Google Play (tienda)','app',R('play.google.com')],
+['Google / Android (fondo)','sys',R('googleapis.com','gstatic.com','gvt1.com','gvt2.com','gvt3.com','ggpht.com','googleusercontent.com','android.com','google-analytics.com','googletagmanager.com','app-measurement.com','firebaseio.com','firebase.com','crashlytics.com','mtalk.google.com','android.clients.google.com','clients1.google.com','clients2.google.com','clients3.google.com','clients4.google.com','clients5.google.com','clients6.google.com','googleadservices.com','recaptcha.net','withgoogle.com','googlezip.net','1e100.net')],
+['Xiaomi / POCO (fondo)','sys',R('xiaomi.com','xiaomi.net','mi.com','miui.com','mi-img.com','mi-idc.com','micloud.com','duokanbox.com','duokan.com','miwifi.com','xiaomiev.com')],
+['Anuncios y analiticas','ads',R('doubleclick.net','googlesyndication.com','adservice.google.com','applovin.com','unity3d.com','unity.com','ironsrc.com','is.com','supersonicads.com','vungle.com','chartboost.com','adjust.com','adjust.io','appsflyer.com','branch.io','mopub.com','inmobi.com','adcolony.com','amplitude.com','mixpanel.com','sentry.io','bugsnag.com','segment.io','onesignal.com','adnxs.com','criteo.com','taboola.com','outbrain.com','moatads.com','scorecardresearch.com','pubmatic.com','rubiconproject.com','smaato.net','tapjoy.com','fyber.com','digitalturbine.com','mintegral.com','mtgglobals.com','pangleglobal.com','liftoff.io')],
+['Red y sistema (fondo)','sys',R('ntp.org','msftconnecttest.com','nextdns.io','cloudflare-dns.com','arpa','local','lan','home','localdomain','internal')],
+['Google (busqueda / Chrome)','app',R('google.com','google.es')]
+];
+function classifyBase(d){d=(d||'').toLowerCase();for(const r of RULES)if(r[2].test(d))return[r[0],r[1]];return['Sin identificar','unk']}
+/*END*/
+function classify(d){
+  const u=userMap[rootOf((d||'').toLowerCase())];
+  if(u)return u.toLowerCase()==='sistema'?['Sistema (marcado por ti)','sys']:[u,'app'];
+  return classifyBase(d);
+}
+const isReal=l=>{const k=classify(l.domain)[1];return k==='app'||k==='unk'};
+function assign(root){
+  const v=prompt('¿De qué app es "'+root+'"?\nEscribe el nombre (ej. Brawl Stars) o "sistema" si es ruido de fondo. Vacío = cancelar.');
+  if(!v||!v.trim())return;
+  userMap[root]=v.trim().slice(0,40);localStorage.setItem('vigia_map',JSON.stringify(userMap));render();
+}
+function setPer(){per=$('per').value;if(per==='24h')render();else loadAna()}
+async function loadAna(){
+  try{
+    $('err').textContent='';
+    const dv=cfg.dev?'&device='+encodeURIComponent(cfg.dev):'';
+    const j=await api(`/profiles/${cfg.prof}/analytics/domains?from=-${per}&limit=500${dv}`);
+    ana=j.data.map(x=>({d:x.domain,n:x.queries,t:0}));
+  }catch(e){$('err').textContent='Error: '+e.message}
+  render();
+}
+function entries(){
+  if(per!=='24h')return ana;
+  const m={};
+  logs.forEach(l=>{const x=m[l.domain]||(m[l.domain]={d:l.domain,n:0,t:0});x.n++;const t=+new Date(l.timestamp);if(t>x.t)x.t=t});
+  return Object.values(m);
+}
+function renderApps(){
+  const now=Date.now(),hide=$('hide').checked,gs={};
+  entries().forEach(e=>{const[n,k]=classify(e.d);const g=gs[n]||(gs[n]={n,k,c:0,t:0,doms:[]});g.c+=e.n;g.t=Math.max(g.t,e.t);g.doms.push(e)});
+  const all=Object.values(gs),tot=all.reduce((a,g)=>a+g.c,0)||1;
+  const sum=k=>all.filter(g=>g.k===k).reduce((a,g)=>a+g.c,0);
+  const pc=v=>Math.round(v/tot*100)+'%';
+  $('appsum').textContent=`Tráfico DNS: ${pc(sum('sys')+sum('ads'))} sistema y anuncios · ${pc(sum('app'))} apps identificadas · ${pc(sum('unk'))} sin identificar`;
+  const show=all.filter(g=>!hide||g.k==='app'||g.k==='unk').sort((a,b)=>(a.k==='unk')-(b.k==='unk')||b.c-a.c);
+  $('apps').innerHTML=show.map(g=>{
+    const tag=(g.k==='sys'||g.k==='ads')?'<span class="tag">fondo</span>':'';
+    const when=g.t?' · '+ago(now-g.t):'';
+    const doms=g.doms.sort((a,b)=>b.n-a.n).slice(0,g.k==='unk'?40:15).map(e=>`<div class="item small"><span class="dom">${esc(e.d)}</span><span class="mut">${e.n}${g.k==='unk'?`<button class="mini" data-r="${esc(rootOf(e.d))}">asignar</button>`:''}</span></div>`).join('');
+    return `<details data-n="${esc(g.n)}"${openApps.has(g.n)?' open':''}><summary><span>${esc(g.n)}${tag}</span><span class="mut">${g.c}${when}</span></summary>${doms}</details>`;
+  }).join('')||'<div class="mut">Sin datos.</div>';
+}
 
 async function api(path){
   let r;
@@ -149,6 +251,7 @@ async function refresh(manual){
   try{
     $('err').textContent='';
     logs=await fetchLogs();
+    if(per!=='24h'&&(manual||!ana.length))await loadAna();
     render();alerts(manual);
     $('upd').textContent='Actualizado '+new Date().toLocaleTimeString('es-ES')+' · '+(cfg.devName||'todos los dispositivos');
   }catch(e){$('err').textContent='Error: '+e.message}
@@ -163,28 +266,29 @@ function render(){
   const silent=idle>cfg.sil*60000&&!isNight(new Date());
   st.textContent=silent?'SILENCIO':'activo';st.className='pill '+(silent?'bad':'ok');
   const blocked=logs.filter(l=>l.status==='blocked');
-  $('cnt').textContent=logs.length;$('blk').textContent=blocked.length;
+  const hide=$('hide').checked,real=logs.filter(isReal),view=hide?real:logs;
+  $('cnt').textContent=view.length;$('blk').textContent=blocked.length;
+  $('cntl').textContent=hide?'consultas de apps 24 h':'consultas 24 h (todas)';
+  $('lastapp').textContent=real.length?'última de apps: hace '+ago(now-new Date(real[0].timestamp)):'sin actividad de apps en 24 h';
   // barras por hora
   const b=Array(24).fill(0),nt=Array(24).fill(false);
-  logs.forEach(l=>{const a=Math.floor((now-new Date(l.timestamp))/3600000);if(a>=0&&a<24)b[23-a]++});
+  view.forEach(l=>{const a=Math.floor((now-new Date(l.timestamp))/3600000);if(a>=0&&a<24)b[23-a]++});
   for(let i=0;i<24;i++){nt[i]=isNight(new Date(now-(23-i)*3600000))}
   const mx=Math.max(...b,1);
   $('bars').innerHTML=b.map((v,i)=>`<div class="${nt[i]?'n':''}" style="height:${v/mx*100}%" title="${v}"></div>`).join('');
-  // top
-  const c={};logs.forEach(l=>{const k=l.root||l.domain;c[k]=(c[k]||0)+1});
-  $('t-top').innerHTML='<h2>Más consultados (24 h)</h2>'+Object.entries(c).sort((x,y)=>y[1]-x[1]).slice(0,25).map(([k,v])=>`<div class="item"><span class="dom">${k}</span><span class="mut">${v}</span></div>`).join('');
-  $('t-blocked').innerHTML='<h2>Bloqueados (24 h)</h2>'+(blocked.length?blocked.slice(0,100).map(l=>`<div class="item"><span class="dom">${l.domain}<div class="mut small">${(l.reasons||[]).map(r=>r.name).join(', ')}</div></span><span class="mut small">${ft(new Date(l.timestamp))}</span></div>`).join(''):'<div class="mut">Nada bloqueado.</div>');
+  renderApps();
+  $('t-blocked').innerHTML='<h2>Bloqueados (24 h)</h2>'+(blocked.length?blocked.slice(0,100).map(l=>`<div class="item"><span class="dom">${esc(l.domain)}<div class="mut small">${esc((l.reasons||[]).map(r=>r.name).join(', '))}</div></span><span class="mut small">${ft(new Date(l.timestamp))}</span></div>`).join(''):'<div class="mut">Nada bloqueado.</div>');
   renderRecent();
 }
 function renderRecent(){
   const q=$('q').value.toLowerCase();
-  $('rec').innerHTML=logs.filter(l=>!q||l.domain.includes(q)).slice(0,150).map(l=>`<div class="item"><span class="dom">${l.status==='blocked'?'⛔ ':''}${l.domain}</span><span class="mut small">${ft(new Date(l.timestamp))}</span></div>`).join('');
+  $('rec').innerHTML=logs.filter(l=>!q||l.domain.includes(q)).slice(0,150).map(l=>`<div class="item"><span class="dom">${l.status==='blocked'?'⛔ ':''}${esc(l.domain)}</span><span class="mut small">${ft(new Date(l.timestamp))}</span></div>`).join('');
 }
 function tab(t){['top','blocked','recent'].forEach(x=>$('t-'+x).classList.toggle('hidden',x!==t))}
 function alerts(manual){
   const now=Date.now();
   // bloqueos nuevos
-  logs.filter(l=>l.status==='blocked').forEach(l=>{
+  logs.filter(l=>l.status==='blocked'&&isReal(l)).forEach(l=>{
     const id=l.timestamp+l.domain;
     if(!seen.has(id)){seen.add(id);if(!manual||true){if(now-new Date(l.timestamp)<10*60000)notify('Intento bloqueado',l.domain,'blk-'+l.domain)}}
   });
@@ -195,7 +299,7 @@ function alerts(manual){
     lastSilentAlert=now;notify('Dispositivo en silencio','Sin actividad DNS desde hace '+(last?ago(now-last):'más de 24 h')+'. ¿Perfil borrado o datos apagados?','silent');
   }
   // actividad nocturna
-  const nl=logs.filter(l=>isNight(new Date(l.timestamp))&&now-new Date(l.timestamp)<+cfg.poll*1000*2&&l.status!=='blocked');
+  const nl=logs.filter(l=>isNight(new Date(l.timestamp))&&now-new Date(l.timestamp)<+cfg.poll*1000*2&&l.status!=='blocked'&&isReal(l));
   if(nl.length>5)notify('Actividad nocturna',nl.length+' consultas recientes en horario nocturno','night');
 }
 function start(){
@@ -203,6 +307,9 @@ function start(){
   refresh();timer=setInterval(()=>{if(!document.hidden)refresh()},cfg.poll*1000);
 }
 document.addEventListener('visibilitychange',()=>{if(!document.hidden&&cfg)refresh()});
+$('hide').checked=localStorage.getItem('vigia_hide')!=='0';
+$('apps').addEventListener('toggle',e=>{const n=e.target.dataset&&e.target.dataset.n;if(n){e.target.open?openApps.add(n):openApps.delete(n)}},true);
+$('apps').addEventListener('click',e=>{const r=e.target.dataset&&e.target.dataset.r;if(r)assign(r)});
 if('serviceWorker' in navigator)navigator.serviceWorker.register('sw.js');
 if(cfg&&cfg.key){$('main').classList.remove('hidden');start()}else showSetup();
 </script>
