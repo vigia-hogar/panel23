@@ -99,23 +99,25 @@ summary::-webkit-details-marker{display:none}
   </div>
   <div class="card" id="t-top">
     <div class="row"><h2>Por app</h2>
-      <select id="per" onchange="setPer()" style="width:auto;margin:0"><option value="24h">24 h</option><option value="7d">7 días</option><option value="30d">30 días</option></select></div>
+      <select id="per" onchange="setPer()" style="width:auto;margin:0"><option value="30m">Últimos 30 min</option><option value="1h">1 hora</option><option value="3h" selected>3 horas</option><option value="6h">6 horas</option><option value="12h">12 horas</option><option value="24h">24 horas</option><option value="7d">7 días</option></select></div>
     <label class="chk"><input type="checkbox" id="hide" checked onchange="localStorage.setItem('vigia_hide',this.checked?1:0);render()"> Ocultar sistema y anuncios</label>
     <div class="mut small" id="appsum"></div>
     <div id="apps"></div>
-    <div class="mut small" style="margin-top:8px">Agrupado por dominios conocidos; el DNS no ve qué app pide qué. En "Sin identificar" pulsa "asignar" para enseñarle la app (o escribe "sistema" si es ruido).</div>
+    <div class="mut small" style="margin-top:8px">Las consultas hechas con el móvil sin uso (pantalla apagada o sin app abierta, según la app del POCO) van a "Segundo plano"; en 7 días no se puede aplicar ese filtro. "no instalada · ¿web?" = el niño tenía el móvil en uso y esa app no está instalada: puede ser la web en el navegador o un anuncio dentro de otra app. Agrupado por dominios conocidos; el DNS no ve qué app pide qué. En "Sin identificar" pulsa "asignar" para enseñarle la app (o escribe "sistema" si es ruido).</div>
   </div>
   <div class="card hidden" id="t-blocked"></div>
   <div class="card hidden" id="t-recent">
-    <input id="q" placeholder="Buscar dominio…" oninput="renderRecent()">
+    <h2>Reciente (bloques de 15 min)</h2>
+    <input id="q" placeholder="Filtrar por app…" oninput="renderRecent()">
     <div id="rec"></div>
   </div>
   <div class="card hidden" id="t-dev">
     <div id="dstate"></div>
     <h2 style="margin-top:12px">Ahora</h2><div id="dnow"></div>
     <h2 style="margin-top:12px">Hoy, por orden</h2><div id="dtl"></div>
-    <div class="row" style="margin-top:12px"><h2>Tiempo por app</h2>
-      <select id="dper" onchange="renderDev()" style="width:auto;margin:0"><option value="1">Hoy</option><option value="7">7 días</option></select></div>
+    <div class="row" style="margin-top:12px"><h2>Tiempo de uso por app</h2>
+      <select id="dper" onchange="renderDev()" style="width:auto;margin:0"><option value="m30">Últimos 30 min</option><option value="m60">1 hora</option><option value="m180">3 horas</option><option value="m360">6 horas</option><option value="d1" selected>Hoy</option><option value="d7">7 días</option></select></div>
+    <div class="mut small">Cuánto tiempo ha tenido el niño cada app abierta en pantalla (no es tráfico DNS).</div>
     <div id="dtot"></div>
     <h2 style="margin-top:12px">Apps instaladas</h2><div id="dapps"></div>
     <div class="mut small" style="margin-top:8px">Datos de la app instalada en el móvil (apps en primer plano y apps instaladas). Se envían cada ~10 min.</div>
@@ -130,7 +132,7 @@ const DEF_API='https://api.nextdns.io';
 const base=()=>(($('base')&&$('base').value.trim())||(cfg&&cfg.base)||DEF_API).replace(/\/$/,'');
 let cfg=JSON.parse(localStorage.getItem('vigia')||'null');
 let logs=[],timer=null,seen=new Set(JSON.parse(localStorage.getItem('vigia_seen')||'[]')),lastSilentAlert=0;
-let per='24h',ana=[],openApps=new Set(),userMap=JSON.parse(localStorage.getItem('vigia_map')||'{}');
+let per='3h',ana=[],openApps=new Set(),userMap=JSON.parse(localStorage.getItem('vigia_map')||'{}');
 const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const rootOf=d=>{const p=d.split('.');if(p.length<=2)return d;const t=p[p.length-1],s=p[p.length-2];return p.slice(-(t.length===2&&s.length<=3?3:2)).join('.')};
 /*RULES*/
@@ -180,13 +182,35 @@ function classify(d){
   if(u)return u.toLowerCase()==='sistema'?['Sistema (marcado por ti)','sys']:[u,'app'];
   return classifyBase(d);
 }
-const isReal=l=>{const k=classify(l.domain)[1];return k==='app'||k==='unk'};
+const isReal=l=>{const k=classify(l.domain)[1];return(k==='app'||k==='unk')&&isChild(l)};
+// ¿La consulta DNS coincide con uso real del móvil? Se cruza con las sesiones de la app del POCO (pantalla en uso).
+// Sin datos de la app, antes de que existieran, o más nuevas que el último envío (~10 min de retraso): se considera uso.
+let _awSrc=null,_aw=null;
+function getAW(){
+  if(!dev||!dev.state||!dev.state.hb)return null;
+  if(_awSrc!==dev){const ss=[].concat(...Object.values(dev.days||{}));_aw={rx:dev.state.hb.rx,ss,first:ss.length?Math.min(...ss.map(s=>s.s)):Infinity};_awSrc=dev}
+  return _aw;
+}
+function isChild(l){
+  const w=getAW();if(!w)return true;
+  const t=+new Date(l.timestamp);
+  if(t>w.rx-60000||t<w.first)return true;
+  return w.ss.some(s=>t>=s.s-90000&&t<=s.e+90000);
+}
+function notInstalled(n){
+  const apps=dev&&dev.state&&dev.state.apps;
+  if(!apps||apps.length<5)return false;
+  const tk=n.toLowerCase().replace(/[^a-z0-9áéíóúñ ]/g,' ').split(/\s+/).filter(t=>t.length>=4);
+  if(!tk.length)return false;
+  return !tk.some(t=>apps.some(a=>String(a.l).toLowerCase().includes(t)));
+}
 function assign(root){
   const v=prompt('¿De qué app es "'+root+'"?\nEscribe el nombre (ej. Brawl Stars) o "sistema" si es ruido de fondo. Vacío = cancelar.');
   if(!v||!v.trim())return;
   userMap[root]=v.trim().slice(0,40);localStorage.setItem('vigia_map',JSON.stringify(userMap));render();
 }
-function setPer(){per=$('per').value;if(per==='24h')render();else loadAna()}
+const WIN={'30m':30,'1h':60,'3h':180,'6h':360,'12h':720,'24h':1440};
+function setPer(){per=$('per').value;if(per==='7d')loadAna();else render()}
 async function loadAna(){
   try{
     $('err').textContent='';
@@ -197,21 +221,21 @@ async function loadAna(){
   render();
 }
 function entries(){
-  if(per!=='24h')return ana;
-  const m={};
-  logs.forEach(l=>{const x=m[l.domain]||(m[l.domain]={d:l.domain,n:0,t:0});x.n++;const t=+new Date(l.timestamp);if(t>x.t)x.t=t});
+  if(per==='7d')return ana;
+  const m={},lim=Date.now()-(WIN[per]||1440)*60000;
+  logs.filter(l=>+new Date(l.timestamp)>=lim).forEach(l=>{const bg=!isChild(l),key=(bg?'#':'')+l.domain,x=m[key]||(m[key]={d:l.domain,bg,n:0,t:0});x.n++;const t=+new Date(l.timestamp);if(t>x.t)x.t=t});
   return Object.values(m);
 }
 function renderApps(){
   const now=Date.now(),hide=$('hide').checked,gs={};
-  entries().forEach(e=>{const[n,k]=classify(e.d);const g=gs[n]||(gs[n]={n,k,c:0,t:0,doms:[]});g.c+=e.n;g.t=Math.max(g.t,e.t);g.doms.push(e)});
+  entries().forEach(e=>{const[n,k]=e.bg?['Segundo plano (móvil sin uso)','sys']:classify(e.d);const g=gs[n]||(gs[n]={n,k,c:0,t:0,doms:[],ni:!e.bg&&k==='app'&&notInstalled(n)});g.c+=e.n;g.t=Math.max(g.t,e.t);g.doms.push(e)});
   const all=Object.values(gs),tot=all.reduce((a,g)=>a+g.c,0)||1;
   const sum=k=>all.filter(g=>g.k===k).reduce((a,g)=>a+g.c,0);
   const pc=v=>Math.round(v/tot*100)+'%';
-  $('appsum').textContent=`Tráfico DNS: ${pc(sum('sys')+sum('ads'))} sistema y anuncios · ${pc(sum('app'))} apps identificadas · ${pc(sum('unk'))} sin identificar`;
+  $('appsum').textContent=`Tráfico DNS: ${pc(sum('sys')+sum('ads'))} sistema, anuncios y segundo plano · ${pc(sum('app'))} apps identificadas · ${pc(sum('unk'))} sin identificar`;
   const show=all.filter(g=>!hide||g.k==='app'||g.k==='unk').sort((a,b)=>(a.k==='unk')-(b.k==='unk')||b.c-a.c);
   $('apps').innerHTML=show.map(g=>{
-    const tag=(g.k==='sys'||g.k==='ads')?'<span class="tag">fondo</span>':'';
+    const tag=(g.k==='sys'||g.k==='ads')?'<span class="tag">fondo</span>':g.ni?'<span class="tag">no instalada · ¿web?</span>':'';
     const when=g.t?' · '+ago(now-g.t):'';
     const doms=g.doms.sort((a,b)=>b.n-a.n).slice(0,g.k==='unk'?40:15).map(e=>`<div class="item small"><span class="dom">${esc(e.d)}</span><span class="mut">${e.n}${g.k==='unk'?`<button class="mini" data-r="${esc(rootOf(e.d))}">asignar</button>`:''}</span></div>`).join('');
     return `<details data-n="${esc(g.n)}"${openApps.has(g.n)?' open':''}><summary><span>${esc(g.n)}${tag}</span><span class="mut">${g.c}${when}</span></summary>${doms}</details>`;
@@ -275,7 +299,7 @@ async function refresh(manual){
   try{
     $('err').textContent='';
     logs=await fetchLogs();
-    if(per!=='24h'&&(manual||!ana.length))await loadAna();
+    if(per==='7d'&&(manual||!ana.length))await loadAna();
     render();alerts(manual);
     if(cfg.wurl&&cfg.rtok)loadDev(manual);
     $('upd').textContent='Actualizado '+new Date().toLocaleTimeString('es-ES')+' · '+(cfg.devName||'todos los dispositivos');
@@ -292,7 +316,7 @@ function render(){
   st.textContent=silent?'SILENCIO':'activo';st.className='pill '+(silent?'bad':'ok');
   const blocked=logs.filter(l=>l.status==='blocked');
   const hide=$('hide').checked,real=logs.filter(isReal),view=hide?real:logs;
-  $('cnt').textContent=view.length;$('blk').textContent=blocked.length;
+  $('cnt').textContent=view.length;$('blk').textContent=blocked.filter(isChild).length;
   $('cntl').textContent=hide?'consultas de apps 24 h':'consultas 24 h (todas)';
   $('lastapp').textContent=real.length?'última de apps: hace '+ago(now-new Date(real[0].timestamp)):'sin actividad de apps en 24 h';
   // barras por hora
@@ -302,12 +326,51 @@ function render(){
   const mx=Math.max(...b,1);
   $('bars').innerHTML=b.map((v,i)=>`<div class="${nt[i]?'n':''}" style="height:${v/mx*100}%" title="${v}"></div>`).join('');
   renderApps();
-  $('t-blocked').innerHTML='<h2>Bloqueados (24 h)</h2>'+(blocked.length?blocked.slice(0,100).map(l=>`<div class="item"><span class="dom">${esc(l.domain)}<div class="mut small">${esc((l.reasons||[]).map(r=>r.name).join(', '))}</div></span><span class="mut small">${ft(new Date(l.timestamp))}</span></div>`).join(''):'<div class="mut">Nada bloqueado.</div>');
+  const g={};
+  let bgN=0;
+  blocked.forEach(l=>{if(!isChild(l)){bgN++;return}const[lb,lv]=blockLabel(l);const x=g[lb]||(g[lb]={lb,lv,n:0,t:0});x.n++;x.t=Math.max(x.t,+new Date(l.timestamp))});
+  const gl=Object.values(g).sort((a,b)=>b.lv-a.lv||b.t-a.t);
+  const bgRow=bgN?`<div class="item dim"><span>Segundo plano, con el móvil sin uso<div class="mut small">${bgN} bloqueo${bgN>1?'s':''} · no se atribuyen al niño</div></span></div>`:'';
+  $('t-blocked').innerHTML='<h2>Bloqueados (24 h)</h2>'+((gl.length||bgN)?bgRow+gl.map(x=>`<div class="item ${x.lv<2?'dim':''}"><span><b style="color:${x.lv>=3?'var(--bad)':x.lv==2?'var(--warn)':'var(--tx)'}">${esc(x.lb)}</b><div class="mut small">${x.n} intento${x.n>1?'s':''} · último hace ${ago(now-x.t)}</div></span></div>`).join('')+'<div class="mut small" style="margin-top:8px">Solo se muestra el tipo de bloqueo, no la dirección.</div>':'<div class="mut">Nada bloqueado.</div>');
   renderRecent();
 }
+// Categoria generica de un bloqueo (sin direccion). Nivel 3 grave, 2 medio, 1 ruido.
+function blockLabel(l){
+  const rs=l.reasons||[];
+  for(const r of rs)if(String(r.id||'').toLowerCase().startsWith('services:'))return['App bloqueada: '+(r.name||'servicio'),2];
+  const s=rs.map(r=>(r.id||'')+' '+(r.name||'')).join(' ').toLowerCase();
+  if(/porn|adult|xxx/.test(s))return['Contenido para adultos',3];
+  if(/gambl|casino|betting/.test(s))return['Apuestas',3];
+  if(/dating/.test(s))return['Citas',3];
+  if(/malware|phish|scam|threat|crypto|typosquat|dga|nrd|newly|parked|ddns|rebind|safe-?browsing/.test(s))return['Web peligrosa (malware/estafa)',3];
+  if(/piracy|torrent/.test(s))return['Piratería',2];
+  if(/social/.test(s))return['Redes sociales',2];
+  if(/game|gaming/.test(s))return['Juegos',2];
+  if(/video|stream/.test(s))return['Vídeo y streaming',2];
+  if(/denylist/.test(s))return['Bloqueado manualmente por ti',2];
+  if(/tlds/.test(s))return['Dominios de riesgo',2];
+  if(/\bads?\b|advert|tracker|tracking|telemetry|analytics|native|adguard/.test(s))return['Publicidad y rastreo',1];
+  const c=classify(l.domain);
+  if(c[1]==='app')return['App: '+c[0],2];
+  return['Otros bloqueos',1];
+}
+// Reciente: bloques de 15 min con las apps que han sonado, sin direcciones
 function renderRecent(){
-  const q=$('q').value.toLowerCase();
-  $('rec').innerHTML=logs.filter(l=>!q||l.domain.includes(q)).slice(0,150).map(l=>`<div class="item"><span class="dom">${l.status==='blocked'?'⛔ ':''}${esc(l.domain)}</span><span class="mut small">${ft(new Date(l.timestamp))}</span></div>`).join('');
+  const q=$('q').value.toLowerCase(),hide=$('hide').checked,slots={};
+  logs.forEach(l=>{
+    const bl=l.status==='blocked',bg=!isChild(l);
+    let[n,k]=classify(l.domain);
+    if(bg){if(hide)return;n='Segundo plano'}
+    else if(!bl&&hide&&(k==='sys'||k==='ads'))return;
+    const t=Math.floor(new Date(l.timestamp)/900000)*900000,s=slots[t]||(slots[t]={t,a:{},b:0,c:0});
+    if(bl)s.b++;else{s.a[n]=(s.a[n]||0)+1;s.c++}
+  });
+  const rows=Object.values(slots).sort((a,b)=>b.t-a.t).map(s=>({...s,names:Object.entries(s.a).sort((a,b)=>b[1]-a[1]).map(x=>x[0])}))
+    .filter(s=>!q||s.names.some(n=>n.toLowerCase().includes(q))).slice(0,24);
+  $('rec').innerHTML=rows.map(s=>{
+    const top=s.names.slice(0,4).join(', ')+(s.names.length>4?' +'+(s.names.length-4):'');
+    return `<div class="item"><span><b>${hm(s.t)}–${hm(s.t+900000)}</b> <span class="small">${esc(top)||'—'}</span>${s.b?` <span class="small" style="color:var(--bad)">⛔ ${s.b}</span>`:''}</span><span class="mut small">${s.c}</span></div>`;
+  }).join('')||'<div class="mut">Sin actividad.</div>';
 }
 // ---------- Móvil del niño (datos de la app Android) ----------
 let dev=null,devAt=0;
@@ -324,6 +387,7 @@ async function loadDev(force){
     dev=await r.json();devAt=Date.now();
   }catch(e){$('dstate').innerHTML='<div style="color:var(--bad)">Error: '+esc(e.message)+'</div>';return}
   renderDev();
+  if(logs.length)render();
 }
 function merged(days){
   const all=[].concat(...days.map(d=>dev.days[d]||[])).sort((a,b)=>a.s-b.s),out=[];
@@ -382,8 +446,13 @@ function renderDev(){
     (hb.screen&&now-last.e<12*60000&&last.l!==HOME)?`<div><b>${esc(last.l)}</b> <span class="mut small">desde ${hm(last.s)} (datos hasta hace ${ago(age)})</span></div>`:
     `<div class="mut">${hb.screen?'Sin app en primer plano':'Pantalla apagada'} · última: <b>${esc(last.l)}</b> hasta las ${hm(last.e)}</div>`;
   $('dtl').innerHTML=today.slice().reverse().map(s=>`<div class="item small ${s.l===HOME?'dim':''}"><span>${hm(s.s)}–${hm(s.e)} · <b>${esc(s.l)}</b></span><span class="mut">${dur(s.e-s.s)}</span></div>`).join('')||'<div class="mut">—</div>';
-  const n=+$('dper').value,keys=Object.keys(dev.days).sort().slice(-n),tot={};
-  keys.forEach(k=>(dev.days[k]||[]).forEach(s=>{if(s.l!==HOME)tot[s.l]=(tot[s.l]||0)+(s.e-s.s)}));
+  const dv=$('dper').value,isMin=dv[0]==='m',n=isMin?2:+dv.slice(1),keys=Object.keys(dev.days).sort().slice(-n),tot={};
+  const lim=isMin?now-(+dv.slice(1))*60000:0;
+  keys.forEach(k=>(dev.days[k]||[]).forEach(s=>{
+    if(s.l===HOME)return;
+    const a=Math.max(s.s,lim),b=Math.min(s.e,now);
+    if(b>a)tot[s.l]=(tot[s.l]||0)+(b-a);
+  }));
   const ent=Object.entries(tot).sort((a,b)=>b[1]-a[1]).slice(0,20),mx=ent.length?ent[0][1]:1;
   $('dtot').innerHTML=ent.map(([l,v])=>`<div class="small"><div class="row"><span>${esc(l)}</span><span class="mut">${dur(v)}</span></div><div class="tb" style="width:${Math.max(3,v/mx*100)}%"></div></div>`).join('')||'<div class="mut">—</div>';
   const apps=(st.apps||[]).slice().sort((a,b)=>b.i-a.i);
@@ -395,7 +464,7 @@ function alerts(manual){
   // bloqueos nuevos
   logs.filter(l=>l.status==='blocked'&&isReal(l)).forEach(l=>{
     const id=l.timestamp+l.domain;
-    if(!seen.has(id)){seen.add(id);if(!manual||true){if(now-new Date(l.timestamp)<10*60000)notify('Intento bloqueado',l.domain,'blk-'+l.domain)}}
+    if(!seen.has(id)){seen.add(id);if(!manual||true){if(now-new Date(l.timestamp)<10*60000){const bl=blockLabel(l)[0];notify('Intento bloqueado',bl,'blk-'+bl)}}}
   });
   localStorage.setItem('vigia_seen',JSON.stringify([...seen].slice(-300)));
   // silencio
