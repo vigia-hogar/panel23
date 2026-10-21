@@ -44,6 +44,13 @@ summary::-webkit-details-marker{display:none}
 .chk input{width:auto;margin:0}
 .tb{height:5px;background:var(--acc);border-radius:3px;margin-top:3px}
 .dim{opacity:.55}
+.sh{font-size:14px;color:var(--mut);text-transform:uppercase;letter-spacing:.05em;font-weight:600}
+summary .sh::before{content:'▸ '}
+details[open]>summary .sh::before{content:'▾ '}
+details.sec{border:0;border-top:1px solid var(--line);padding:9px 0}
+#avisos details.main{border:0;padding:0}
+.tg{font-size:11px;font-weight:700;border-radius:99px;padding:1px 7px;margin-right:4px;white-space:nowrap}
+.tg-r{background:#7f1d1d;color:#fca5a5}.tg-w{background:#78350f;color:#fcd34d}.tg-n{background:#334155;color:#cbd5e1}
 </style>
 </head>
 <body>
@@ -82,11 +89,10 @@ summary::-webkit-details-marker{display:none}
     <div class="row"><div><div class="big" id="last">—</div><div class="mut small" id="lastd"></div><div class="mut small" id="lastapp"></div></div>
     <div style="text-align:right"><div class="big" id="cnt">—</div><div class="mut small"><span id="cntl">consultas 24 h</span> · <span id="blk">0</span> bloqueadas</div></div></div>
   </div>
-  <div class="card hidden" id="avisos">
-    <div class="row"><h2>Avisos</h2><span id="avn"></span></div>
-    <div id="avl"></div>
+  <div class="card hidden" id="avisos"><details class="main" data-k="avisos"><summary><span class="sh">Avisos</span><span id="avn"></span></summary>
+    <div id="avl" style="margin-top:6px"></div>
     <div class="row"><button class="sec" onclick="avSeen()">Marcar vistos</button><button class="sec" onclick="enablePush()">Activar avisos en este móvil</button></div>
-    <div class="mut small" id="avmsg"></div>
+    <div class="mut small" id="avmsg"></div></details>
   </div>
   <div class="card"><h2>Actividad por hora (24 h)</h2><div class="bars" id="bars"></div>
     <div class="row mut small"><span>hace 24 h</span><span>ahora</span></div>
@@ -114,12 +120,14 @@ summary::-webkit-details-marker{display:none}
   <div class="card hidden" id="t-dev">
     <div id="dstate"></div>
     <h2 style="margin-top:12px">Ahora</h2><div id="dnow"></div>
-    <h2 style="margin-top:12px">Hoy, por orden</h2><div id="dtl"></div>
-    <div class="row" style="margin-top:12px"><h2>Tiempo de uso por app</h2>
+    <details class="sec" data-k="dtl"><summary><span class="sh">Hoy, por orden</span><span class="mut small" id="stl"></span></summary><div id="dtl"></div></details>
+    <details class="sec" data-k="dtot"><summary><span class="sh">Tiempo de uso por app</span><span class="mut small" id="stot"></span></summary>
+      <div class="row"><span class="mut small">Tiempo con cada app abierta en pantalla (no es tráfico DNS)</span>
       <select id="dper" onchange="renderDev()" style="width:auto;margin:0"><option value="m30">Últimos 30 min</option><option value="m60">1 hora</option><option value="m180">3 horas</option><option value="m360">6 horas</option><option value="d1" selected>Hoy</option><option value="d7">7 días</option></select></div>
-    <div class="mut small">Cuánto tiempo ha tenido el niño cada app abierta en pantalla (no es tráfico DNS).</div>
-    <div id="dtot"></div>
-    <h2 style="margin-top:12px">Apps instaladas</h2><div id="dapps"></div>
+      <div id="dtot"></div></details>
+    <details class="sec" data-k="dapps"><summary><span class="sh">Apps instaladas</span><span id="sapps"></span></summary>
+      <div class="row"><span class="mut small">Cambios desde «Marcar vistas» (o últimos 7 días)</span><button class="mini" onclick="appsSeen()">Marcar vistas</button></div>
+      <div id="dapps"></div></details>
     <div class="mut small" style="margin-top:8px">Datos de la app instalada en el móvil (apps en primer plano y apps instaladas). Se envían cada ~10 min.</div>
   </div>
   <div class="row"><button onclick="refresh(true)">Actualizar</button><button class="sec" onclick="showSetup()">Ajustes</button></div>
@@ -397,12 +405,16 @@ function merged(days){
 // ---------- Avisos del Worker (historial + notificaciones push propias) ----------
 const seenTs=()=>{try{return +localStorage.getItem('vigia_av_seen')||0}catch(e){return 0}};
 function avSeen(){try{localStorage.setItem('vigia_av_seen',String(Date.now()))}catch(e){}renderAvisos()}
+const AVT=[[/nueva app/i,'Nueva app','w'],[/desinstalada/i,'App quitada','w'],[/bloque/i,'Bloqueo','r'],[/nocturna/i,'Nocturna','w'],[/silencio|sin se[nñ]al/i,'Sin señal','r'],[/protecci|permiso/i,'Protección','r'],[/prueba/i,'Prueba','n']];
+const avType=t=>{for(const x of AVT)if(x[0].test(t))return[x[1],x[2]];return['Aviso','n']};
 function renderAvisos(){
   if(!dev)return;
-  const list=(dev.alerts||[]).filter(a=>a.t>Date.now()-7*86400000),s=seenTs(),nw=list.filter(a=>a.t>s).length;
+  const list=(dev.alerts||[]).filter(a=>a.t>Date.now()-7*86400000),s=seenTs(),fresh=list.filter(a=>a.t>s),nw=fresh.length,cnt={};
+  fresh.forEach(a=>{const[n,c]=avType(a.title);const x=cnt[n]||(cnt[n]={n,c,k:0});x.k++});
   $('avisos').classList.remove('hidden');
-  $('avn').innerHTML=nw?`<span class="pill bad">${nw} nuevo${nw>1?'s':''}</span>`:'<span class="pill ok">al día</span>';
-  $('avl').innerHTML=list.slice(0,8).map(a=>`<div class="item small${a.t>s?'':' dim'}"><span><b style="color:${a.p>=5?'var(--bad)':a.p>=4?'var(--warn)':'var(--tx)'}">${esc(a.title)}</b><div class="mut">${esc(a.msg)}</div></span><span class="mut">${new Date(a.t).toLocaleString('es-ES',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})}</span></div>`).join('')||'<div class="mut small">Sin avisos en los últimos 7 días.</div>';
+  $('avn').innerHTML=nw?`<span><span class="pill bad">${nw}</span> ${Object.values(cnt).slice(0,3).map(x=>`<span class="tg tg-${x.c}">${x.n}${x.k>1?' ×'+x.k:''}</span>`).join('')}</span>`:'<span class="pill ok">al día</span>';
+  $('avl').innerHTML=list.slice(0,15).map(a=>{const[tn,tc]=avType(a.title),k='aw'+a.t;
+    return `<details data-k="${k}"${openMap[k]?' open':''} class="${a.t>s?'':'dim'}"><summary><span><span class="tg tg-${tc}">${tn}</span><b style="color:${a.p>=5?'var(--bad)':a.p>=4?'var(--warn)':'var(--tx)'}">${esc(a.title)}</b></span><span class="mut small">${new Date(a.t).toLocaleString('es-ES',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})}</span></summary><div class="small mut" style="padding-top:4px">${esc(a.msg)}</div></details>`}).join('')||'<div class="mut small">Sin avisos en los últimos 7 días.</div>';
   pushState();
 }
 async function pushState(){
@@ -439,12 +451,14 @@ function renderDev(){
   const age=now-hb.rx,cls=age<25*60000?'ok':age<45*60000?'warn':'bad';
   $('dstate').innerHTML=`<div class="row"><h2>Estado de la app</h2><span class="pill ${cls}">${cls==='ok'?'con señal':cls==='warn'?'retraso':'SIN SEÑAL'}</span></div>
     <div class="small">Última señal: hace ${ago(age)} · batería ${hb.bat??'?'}% · pantalla ${hb.screen?'encendida':'apagada'}<br>
-    Permiso de uso: <b style="color:${hb.usageOk?'var(--ok)':'var(--bad)'}">${hb.usageOk?'OK':'RETIRADO'}</b> · Protección anti-desinstalación: <b style="color:${hb.admin?'var(--ok)':'var(--warn)'}">${hb.admin?'activa':'no'}</b></div>`;
+    Permiso de uso: <b style="color:${hb.usageOk?'var(--ok)':'var(--bad)'}">${hb.usageOk?'OK':'RETIRADO'}</b> · Protección anti-desinstalación: <b style="color:${hb.admin?'var(--ok)':'var(--warn)'}">${hb.admin?'activa':'no'}</b></div>`+
+    (cls==='ok'?'':`<div class="small" style="margin-top:6px;color:var(--warn)">Último dato recibido: batería ${hb.bat??'?'}%, pantalla ${hb.screen?'encendida':'apagada'}.${hb.bat!=null&&hb.bat<=5?' Probable: se quedó sin batería.':''} Si el móvil está encendido, desbloqueado y con datos y sigue sin señal tras 2-3 min: en el POCO, Ajustes › Apps › Permisos › Inicio automático y batería «Sin restricciones» para Supervisión familiar.</div>`);
   const key=todayKey(),today=merged([key]);
   const last=today[today.length-1];
   $('dnow').innerHTML=!last?'<div class="mut">Sin actividad hoy.</div>':
     (hb.screen&&now-last.e<12*60000&&last.l!==HOME)?`<div><b>${esc(last.l)}</b> <span class="mut small">desde ${hm(last.s)} (datos hasta hace ${ago(age)})</span></div>`:
     `<div class="mut">${hb.screen?'Sin app en primer plano':'Pantalla apagada'} · última: <b>${esc(last.l)}</b> hasta las ${hm(last.e)}</div>`;
+  $('stl').textContent=today.length?`${today.length} sesiones · última ${hm(last.e)}`:'sin actividad';
   $('dtl').innerHTML=today.slice().reverse().map(s=>`<div class="item small ${s.l===HOME?'dim':''}"><span>${hm(s.s)}–${hm(s.e)} · <b>${esc(s.l)}</b></span><span class="mut">${dur(s.e-s.s)}</span></div>`).join('')||'<div class="mut">—</div>';
   const dv=$('dper').value,isMin=dv[0]==='m',n=isMin?2:+dv.slice(1),keys=Object.keys(dev.days).sort().slice(-n),tot={};
   const lim=isMin?now-(+dv.slice(1))*60000:0;
@@ -454,10 +468,23 @@ function renderDev(){
     if(b>a)tot[s.l]=(tot[s.l]||0)+(b-a);
   }));
   const ent=Object.entries(tot).sort((a,b)=>b[1]-a[1]).slice(0,20),mx=ent.length?ent[0][1]:1;
+  const totSum=Object.values(tot).reduce((a,b)=>a+b,0);
+  $('stot').textContent=ent.length?`${dur(totSum)} · más: ${ent[0][0]} ${dur(ent[0][1])}`:'—';
   $('dtot').innerHTML=ent.map(([l,v])=>`<div class="small"><div class="row"><span>${esc(l)}</span><span class="mut">${dur(v)}</span></div><div class="tb" style="width:${Math.max(3,v/mx*100)}%"></div></div>`).join('')||'<div class="mut">—</div>';
-  const apps=(st.apps||[]).slice().sort((a,b)=>b.i-a.i);
-  $('dapps').innerHTML=apps.map(a=>{const nw=a.i>now-7*86400000;return`<div class="item small"><span>${esc(a.l)}${nw?' <span class="pill warn">nueva</span>':''}</span><span class="mut">${new Date(a.i).toLocaleDateString('es-ES')}</span></div>`}).join('')||'<div class="mut">Aún sin lista de apps.</div>';
+  const sA=appsSeenTs()||now-7*86400000,all=(st.apps||[]),rm=(st.removed||[]).filter(r=>r.t>now-30*86400000);
+  const nwA=all.filter(a=>a.i>sA),upA=all.filter(a=>a.i<=sA&&a.u>a.i+60000&&a.u>sA),rmA=rm.filter(r=>r.t>sA);
+  $('sapps').innerHTML=(nwA.length?`<span class="pill warn">${nwA.length} nueva${nwA.length>1?'s':''}</span> `:'')+(rmA.length?`<span class="pill bad">${rmA.length} quitada${rmA.length>1?'s':''}</span> `:'')+(upA.length?`<span class="tg tg-n">${upA.length} actualizada${upA.length>1?'s':''}</span> `:'')+`<span class="mut small">${all.length} apps</span>`;
+  const dd=t=>new Date(t).toLocaleDateString('es-ES',{day:'2-digit',month:'2-digit'});
+  const row=(l,tagH,d)=>`<div class="item small"><span>${esc(l)} ${tagH}</span><span class="mut">${d}</span></div>`;
+  const ch=[...nwA.sort((a,b)=>b.i-a.i).map(a=>row(a.l,'<span class="pill warn">nueva</span>',dd(a.i))),
+    ...rmA.map(r=>row(r.l,'<span class="pill bad">quitada</span>',dd(r.t))),
+    ...upA.sort((a,b)=>b.u-a.u).map(a=>row(a.l,'<span class="tg tg-n">actualizada</span>',dd(a.u)))];
+  const chP=new Set([...nwA,...upA].map(a=>a.p));
+  const rest=all.filter(a=>!chP.has(a.p)).sort((a,b)=>String(a.l).localeCompare(String(b.l),'es')).map(a=>row(a.l,'',dd(a.i)));
+  $('dapps').innerHTML=(ch.join('')+(ch.length&&rest.length?'<div class="mut small" style="padding:6px 0">Resto</div>':'')+rest.join(''))||'<div class="mut">Aún sin lista de apps.</div>';
 }
+const appsSeenTs=()=>{try{return +localStorage.getItem('vigia_apps_seen')||0}catch(e){return 0}};
+function appsSeen(){try{localStorage.setItem('vigia_apps_seen',String(Date.now()))}catch(e){}renderDev()}
 function tab(t){['top','blocked','recent','dev'].forEach(x=>$('t-'+x).classList.toggle('hidden',x!==t))}
 function alerts(manual){
   const now=Date.now();
@@ -484,6 +511,10 @@ document.addEventListener('visibilitychange',()=>{if(!document.hidden&&cfg)refre
 $('hide').checked=localStorage.getItem('vigia_hide')!=='0';
 $('apps').addEventListener('toggle',e=>{const n=e.target.dataset&&e.target.dataset.n;if(n){e.target.open?openApps.add(n):openApps.delete(n)}},true);
 $('apps').addEventListener('click',e=>{const r=e.target.dataset&&e.target.dataset.r;if(r)assign(r)});
+let openMap={};try{openMap=JSON.parse(localStorage.getItem('vigia_open')||'{}')}catch(e){}
+document.addEventListener('toggle',e=>{const d=e.target,k=d&&d.dataset&&d.dataset.k;if(!k)return;openMap[k]=d.open;
+  if(!k.startsWith('aw'))try{const o={};for(const x in openMap)if(!x.startsWith('aw'))o[x]=openMap[x];localStorage.setItem('vigia_open',JSON.stringify(o))}catch(_){}},true);
+document.querySelectorAll('details[data-k]').forEach(d=>{if(openMap[d.dataset.k]!==undefined)d.open=openMap[d.dataset.k]});
 if('serviceWorker' in navigator)navigator.serviceWorker.register('sw.js');
 if(cfg&&cfg.key){$('main').classList.remove('hidden');start()}else showSetup();
 </script>
